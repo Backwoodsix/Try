@@ -1,0 +1,182 @@
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+
+-- Player setup
+local LocalPlayer = Players.LocalPlayer
+local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local hrp = character:WaitForChild("HumanoidRootPart")
+local hum = character:WaitForChild("Humanoid")
+
+if not character.PrimaryPart then
+    character.PrimaryPart = hrp
+end
+
+-- Fallback location (TeslaLab)
+local fallbackCFrame = Workspace.TeslaLab.Generator.Generator.CFrame
+
+-- Utility: check if a model has unanchored parts
+local function isUnanchored(model)
+    for _, p in pairs(model:GetDescendants()) do
+        if p:IsA("BasePart") and not p.Anchored then
+            return true
+        end
+    end
+    return false
+end
+
+-- Find nearest unanchored Chair
+local function findNearestValidChair()
+    local runtimeFolder = Workspace:FindFirstChild("RuntimeItems")
+    if not runtimeFolder then return nil end
+
+    local origin = hrp.Position
+    local closest, shortest = nil, math.huge
+
+    for _, item in pairs(runtimeFolder:GetChildren()) do
+        if item:IsA("Model") and item.Name == "Chair" and isUnanchored(item) then
+            local seat = item:FindFirstChildWhichIsA("Seat", true)
+            if seat and not seat.Occupant then
+                local dist = (origin - seat.Position).Magnitude
+                if dist < shortest then
+                    closest = seat
+                    shortest = dist
+                end
+            end
+        end
+    end
+
+    return closest
+end
+
+-- Disable collisions for character and chair
+local function disableCollisionsRecursive(obj)
+    for _, part in pairs(obj:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+end
+
+-- Sit and weld logic
+local function sitAndWeldToSeat(seat)
+    assert(seat and seat:IsA("Seat"), "Invalid seat")
+
+    hrp.CFrame = seat.CFrame * CFrame.new(0, 2, 0)
+    wait(0.2)
+    seat:Sit(hum)
+
+    local success = false
+    for i = 1, 30 do
+        if hum.SeatPart == seat then
+            success = true
+            break
+        end
+        wait(0.1)
+    end
+
+    if not success then
+        warn("Failed to sync with seat.")
+        return
+    end
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Name = "TempWeld"
+    weld.Part0 = hrp
+    weld.Part1 = seat
+    weld.Parent = hrp
+
+    disableCollisionsRecursive(character)
+    disableCollisionsRecursive(seat.Parent)
+
+    wait(0.5)
+end
+
+-- Flying logic
+FLYING = false
+local iyflyspeed = 200
+local velocityHandlerName = "VelocityHandler"
+local gyroHandlerName = "GyroHandler"
+local mfly1, mfly2
+
+local function enableFlying()
+    FLYING = true
+    local root = hrp
+    local camera = Workspace.CurrentCamera
+    local v3inf = Vector3.new(9e9, 9e9, 9e9)
+    local controlModule = require(LocalPlayer.PlayerScripts:WaitForChild("PlayerModule"):WaitForChild("ControlModule"))
+
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = velocityHandlerName
+    bv.Parent = root
+    bv.MaxForce = v3inf
+    bv.Velocity = Vector3.new()
+
+    local bg = Instance.new("BodyGyro")
+    bg.Name = gyroHandlerName
+    bg.Parent = root
+    bg.MaxTorque = v3inf
+    bg.P = 1000
+    bg.D = 50
+
+    mfly1 = RunService.RenderStepped:Connect(function()
+        if FLYING then
+            local direction = controlModule:GetMoveVector()
+            bv.Velocity = (camera.CFrame.RightVector * direction.X * iyflyspeed) + (-camera.CFrame.LookVector * direction.Z * iyflyspeed)
+            bg.CFrame = camera.CFrame
+        end
+    end)
+end
+
+local function disableFlying()
+    pcall(function()
+        FLYING = false
+        if hrp:FindFirstChild(velocityHandlerName) then hrp[velocityHandlerName]:Destroy() end
+        if hrp:FindFirstChild(gyroHandlerName) then hrp[gyroHandlerName]:Destroy() end
+        hum.PlatformStand = false
+        if mfly1 then mfly1:Disconnect() end
+        if mfly2 then mfly2:Disconnect() end
+    end)
+end
+
+-- GUI Setup
+local ScreenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
+ScreenGui.Name = "ChairFlyGUI"
+ScreenGui.ResetOnSpawn = false
+
+local function makeButton(text, pos, callback)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0, 160, 0, 40)
+    button.Position = pos
+    button.Text = text
+    button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextScaled = true
+    button.Parent = ScreenGui
+    button.MouseButton1Click:Connect(callback)
+end
+
+makeButton("🪑 Find + Sit Chair", UDim2.new(0, 10, 0, 10), function()
+    local chair = findNearestValidChair()
+    if not chair then
+        hrp.CFrame = fallbackCFrame
+        wait(1)
+        chair = findNearestValidChair()
+    end
+    if chair then
+        sitAndWeldToSeat(chair)
+    else
+        StarterGui:SetCore("SendNotification", { Title = "No Chair", Text = "Couldn't find a valid chair", Duration = 4 })
+    end
+end)
+
+makeButton("🚀 Enable Fly", UDim2.new(0, 10, 0, 60), function()
+    enableFlying()
+end)
+
+makeButton("🛑 Disable Fly", UDim2.new(0, 10, 0, 110), function()
+    disableFlying()
+end)
